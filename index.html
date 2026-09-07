@@ -413,12 +413,15 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 
 /* -------------------------------------------------- Beleg im Korrekturdialog */
 
-.beleg { margin: 0; text-align: center; }
+.belege { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+/* Begrenzt, damit ein EINZELNES Bild den Dialog nicht auseinanderzieht -- und
+   damit zwei nebeneinander passen, ohne umzubrechen. */
+.beleg { margin: 0; text-align: center; flex: 0 1 165px; min-width: 0; }
 .beleg img {
     /* Der Ausschnitt ist rund 152 px breit -- vergroessert dargestellt, damit
        die Lampen und Ziffern erkennbar bleiben. `pixelated`, weil Glaetten die
        einzelnen Lampen ineinanderlaufen liesse. */
-    width: min(280px, 100%);
+    width: 100%;
     image-rendering: pixelated;
     border-radius: 6px;
     border: 1px solid var(--karte-rand);
@@ -557,10 +560,16 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
       CSV daneben.
     </p>
 
-    <figure id="korrektur-beleg" class="beleg" hidden>
-      <img id="korrektur-bild" alt="Anzeigetafel im Moment des Wurfs">
-      <figcaption class="hinweis">Die Anzeigetafel in dem Frame, aus dem das Ergebnis stammt.</figcaption>
-    </figure>
+    <div id="korrektur-beleg" class="belege" hidden>
+      <figure class="beleg">
+        <img id="korrektur-bild-vorher" alt="Anzeigetafel vor dem Wurf">
+        <figcaption class="hinweis">davor — hierauf wurde geworfen</figcaption>
+      </figure>
+      <figure class="beleg">
+        <img id="korrektur-bild" alt="Anzeigetafel nach dem Wurf">
+        <figcaption class="hinweis">danach — daraus stammt das Ergebnis</figcaption>
+      </figure>
+    </div>
     <p id="korrektur-beleg-fehlt" class="hinweis" hidden></p>
 
     <div id="korrektur-raute" class="korrektur-raute"></div>
@@ -1065,14 +1074,33 @@ class ThrowFeed {
      */
     async fetchBoardImage(id) {
         if (id === null || id === undefined) return null;
-        const url = `${this.endpoint}?select=board_jpeg&id=eq.${encodeURIComponent(id)}`;
+
+        // Erst beide Spalten, dann notfalls nur die eine.
+        //
+        // PostgREST lehnt die GANZE Abfrage ab, wenn EINE Spalte fehlt
+        // (`PGRST204`). Ohne den zweiten Versuch waere mit dem Vorher-Bild auch
+        // das Nachher-Bild verschwunden -- an einer Tabelle, der nur die
+        // neuere Spalte fehlt. Genau dieser Fall ist am 2026-09-07 eingetreten.
+        for (const felder of ["board_jpeg,board_before_jpeg", "board_jpeg"]) {
+            const zeile = await this._holeSpalten(id, felder);
+            if (zeile !== null) {
+                return { nachher: zeile.board_jpeg || null,
+                         vorher: zeile.board_before_jpeg || null };
+            }
+        }
+        return null;
+    }
+
+    async _holeSpalten(id, felder) {
+        const url = `${this.endpoint}?select=${felder}`
+                  + `&id=eq.${encodeURIComponent(id)}`;
         try {
             const antwort = await fetch(url, {
                 headers: { apikey: this.key, Authorization: `Bearer ${this.key}` },
             });
             if (!antwort.ok) return null;
             const zeilen = await antwort.json();
-            return (zeilen[0] && zeilen[0].board_jpeg) || null;
+            return zeilen[0] || {};
         } catch (fehler) {
             console.warn("Tafelbild nicht abrufbar", fehler);
             return null;
@@ -1480,11 +1508,17 @@ function oeffneKorrektur(bahn, zeile) {
 }
 
 async function ladeBeleg(fuer) {
-    const bild = zustand.feed ? await zustand.feed.fetchBoardImage(fuer) : null;
+    const bilder = zustand.feed ? await zustand.feed.fetchBoardImage(fuer) : null;
     // Inzwischen ein anderer Wurf offen? Dann gehoert dieses Bild nicht hierher.
     if (korrekturZiel === null || korrekturZiel.id !== fuer) return;
-    if (bild) {
-        $("#korrektur-bild").src = `data:image/jpeg;base64,${bild}`;
+    if (bilder && (bilder.nachher || bilder.vorher)) {
+        const setze = (sel, wert) => {
+            const el = $(sel);
+            el.parentElement.hidden = !wert;
+            if (wert) el.src = `data:image/jpeg;base64,${wert}`;
+        };
+        setze("#korrektur-bild-vorher", bilder.vorher);
+        setze("#korrektur-bild", bilder.nachher);
         $("#korrektur-beleg").hidden = false;
         $("#korrektur-beleg-fehlt").hidden = true;
     } else {
