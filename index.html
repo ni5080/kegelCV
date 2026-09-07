@@ -303,7 +303,75 @@ tr.neu { animation: neu 1.6s ease-out; }
 
 svg.raute .gefallen { fill: var(--akzent); stroke: var(--akzent-warm); }
 svg.raute .steht    { fill: var(--stehend); stroke: #4b5468; }
+/* Lag schon vor diesem Wurf: nur ein Umriss. Im Abraeumen ist das der
+   Unterschied zwischen "steht noch" und "war schon weg" -- ohne ihn waere aus
+   dem Bild nicht zu erkennen, worauf geworfen wurde. */
+svg.raute .weg      { fill: none; stroke: #333a47; stroke-dasharray: 2 2; }
 svg.raute circle    { stroke-width: 1.5; }
+
+/* ------------------------------------------------------- Phase und Marken */
+
+button.phase {
+    background: transparent;
+    border-color: var(--karte-rand);
+    color: var(--gedaempft);
+    font-size: 12px;
+    padding: 5px 10px;
+}
+button.phase[data-phase="abraeumen"] { color: var(--akzent); border-color: var(--akzent); }
+/* Von Hand gesetzt: ausgefuellt, damit man es von der Automatik unterscheidet. */
+button.phase[data-von-hand="ja"] {
+    background: var(--akzent);
+    color: #23180a;
+    border-color: var(--akzent);
+}
+
+td.marken { text-align: right; white-space: nowrap; }
+.marke {
+    font-size: 10px;
+    font-weight: 700;
+    border-radius: 4px;
+    padding: 2px 5px;
+    margin-left: 4px;
+}
+.marke.korr     { background: rgba(78, 201, 122, 0.18); color: var(--gruen); }
+.marke.konflikt { background: rgba(226, 86, 90, 0.20); color: var(--rot); }
+
+tr.klickbar { cursor: pointer; }
+tr.klickbar:hover { background: rgba(255, 255, 255, 0.04); }
+tr.widerspruch td { box-shadow: inset 2px 0 0 var(--rot); }
+tr.korrigiert .wert { color: var(--gruen); }
+
+/* ------------------------------------------------------- Korrektur-Raute */
+
+.korrektur-raute {
+    position: relative;
+    /* Faellt bei niedrigen Fenstern mit -- sonst passt der Dialog nicht. */
+    width: min(220px, 42vh);
+    height: min(240px, 46vh);
+    align-self: center;
+    margin: 4px 0;
+}
+.kegel-knopf {
+    position: absolute;
+    /* `left`/`top` bezeichnen den Mittelpunkt -- siehe app.js. */
+    transform: translate(-50%, -50%);
+    width: 18%;
+    aspect-ratio: 1;
+    min-width: 30px;
+    font-size: clamp(12px, 3.5vh, 15px);
+    padding: 0;
+    border-radius: 50%;
+    font-weight: 700;
+    background: var(--stehend);
+    color: var(--gedaempft);
+    border: 2px solid #4b5468;
+}
+.kegel-knopf[data-gefallen="ja"] {
+    background: var(--akzent);
+    color: #23180a;
+    border-color: var(--akzent-warm);
+}
 
 /* --------------------------------------------------------------- Dialog */
 
@@ -315,13 +383,23 @@ dialog {
     padding: 20px;
     max-width: 420px;
     width: calc(100% - 32px);
+    /* Sonst waechst der Korrekturdialog ueber den Bildschirmrand hinaus und
+       die Ueberschrift wird oben abgeschnitten (gemessen bei 455 px Hoehe). */
+    max-height: 90vh;
+    /* Nur senkrecht rollen. Waagerecht gibt es nichts zu sehen -- `auto` zeigte
+       dort trotzdem eine Leiste, sobald der senkrechte Balken Platz nahm. */
+    overflow-x: hidden;
+    overflow-y: auto;
 }
 dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 .einstellungen { display: flex; flex-direction: column; gap: 12px; }
 .einstellungen h2 { margin: 0; font-size: 16px; }
 .einstellungen label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
 .einstellungen small { color: var(--gedaempft); font-weight: 400; }
-.dlg-knoepfe { display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px; }
+/* Umbrechen erlaubt: Drei Knoepfe passen im Korrekturdialog nicht in eine
+   Zeile und erzeugten sonst einen waagerechten Rollbalken. */
+.dlg-knoepfe { display: flex; gap: 10px; justify-content: flex-end;
+               margin-top: 6px; flex-wrap: wrap; }
 
 /* --------------------------------------------------------------- Schmal */
 
@@ -392,6 +470,8 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
       <h2 class="bahn-name">Bahn</h2>
       <span class="abschnitt"></span>
       <div class="zeile">
+        <button class="phase" type="button" title="Umschalten — gilt ab dem nächsten Wurf"></button>
+        <button class="phase-auto ghost klein" type="button" hidden>auto</button>
         <button class="start" type="button">Start</button>
         <button class="stopp" type="button">Stopp</button>
       </div>
@@ -412,7 +492,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
     <div class="tabelle-rahmen">
       <table class="wuerfe">
         <thead>
-          <tr><th>Nr.</th><th>Wert</th><th>Kegel</th><th>Bild</th><th>Zeit</th></tr>
+          <tr><th>Nr.</th><th>Wert</th><th>Kegel</th><th>Bild</th><th>Zeit</th><th></th></tr>
         </thead>
         <tbody></tbody>
       </table>
@@ -447,6 +527,32 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
     <div class="dlg-knoepfe">
       <button value="abbruch" class="ghost" type="submit">Abbrechen</button>
       <button value="ok" id="cfg-ok" type="submit">Übernehmen</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-korrektur">
+  <form method="dialog" class="einstellungen" id="korrektur-form">
+    <h2>Wurf korrigieren</h2>
+    <p id="korrektur-kopf" class="hinweis"></p>
+
+    <p class="hinweis">
+      Anklicken, welche Kegel <b>wirklich gefallen</b> sind. Die Datenbank wird
+      dabei <b>nicht</b> geändert — die Messung bleibt erhalten und steht in der
+      CSV daneben.
+    </p>
+
+    <div id="korrektur-raute" class="korrektur-raute"></div>
+    <p id="korrektur-stand" class="hinweis"></p>
+
+    <label>Bemerkung <small>(optional, landet in der CSV)</small>
+      <input type="text" id="korrektur-notiz" placeholder="z. B. Kegel 3 stand noch">
+    </label>
+
+    <div class="dlg-knoepfe">
+      <button value="zuruecknehmen" class="ghost klein" type="submit">Zurücknehmen</button>
+      <button value="abbruch" class="ghost" type="submit">Abbrechen</button>
+      <button value="ok" type="submit">Übernehmen</button>
     </div>
   </form>
 </dialog>
@@ -500,6 +606,42 @@ function standingPins(fallen) {
     return ALL_PINS.filter((pin) => !down.has(pin));
 }
 
+/** Der Koenig in der Mitte der Raute. */
+const KOENIG = 5;
+
+const PHASE_VOLLEN = "vollen";
+const PHASE_ABRAEUMEN = "abraeumen";
+
+/** Wuerfe in die Vollen je Satz, und Wuerfe je Spiel. */
+const VOLLEN_WUERFE = 15;
+const SPIEL_WUERFE = 30;
+
+/**
+ * In die Vollen oder ins Abraeumen? -- nach dem regulaeren Rhythmus.
+ *
+ * Vom Nutzer festgelegt (2026-09-07): Wuerfe 1 bis 15 gehen in die Vollen, 16
+ * bis 30 ins Abraeumen, danach beginnt es von vorn. Ueberschreiben laesst sich
+ * das je Bahn von Hand -- die Anlage haelt sich nicht immer daran, und der
+ * Abschnitt kann mitten in einem Spiel beginnen.
+ */
+function automaticPhase(throwNumber, vollen = VOLLEN_WUERFE,
+                               spiel = SPIEL_WUERFE) {
+    const imSpiel = ((throwNumber - 1) % spiel) + 1;
+    return imSpiel <= vollen ? PHASE_VOLLEN : PHASE_ABRAEUMEN;
+}
+
+/**
+ * Stellt die Anlage nach diesem Bild neu auf?
+ *
+ * Ja, wenn nichts mehr steht -- und ebenso, wenn nur noch der Koenig steht.
+ * Den zweiten Fall hat der Nutzer ergaenzt (2026-09-07); er folgt nicht aus
+ * der ersten Regel und stand in keiner Projektunterlage.
+ */
+function needsFreshPicture(standing) {
+    if (standing.length === 0) return true;
+    return standing.length === 1 && standing[0] === KOENIG;
+}
+
 /**
  * Zeitpunkt eines Wurfs in Millisekunden.
  *
@@ -537,6 +679,51 @@ class LaneTicker {
         this.throws = [];
         this.segments = [];
         this._seen = new Set();
+        // Handmarken fuer die Spielphase: {fromThrow, phase}. `phase: null`
+        // heisst "ab hier wieder automatisch". Sortiert nach `fromThrow`.
+        this.phaseMarks = [];
+        // Korrekturen des Nutzers, nach Wurf-id: {pins, note}.
+        //
+        // Sie aendern die DATENBANK NICHT -- dort steht, was gemessen wurde,
+        // und das bleibt so. Die Korrektur wirkt nur hier und in der CSV, wo
+        // beides nebeneinander steht: das Gemessene und das, was der Nutzer
+        // gesehen hat. Genau diese Trennung ist der Zweck.
+        this.corrections = {};
+    }
+
+    /** Setzt die Phase ab einer Wurfnummer von Hand. `phase: null` = automatisch. */
+    setPhase(fromThrow, phase) {
+        this.phaseMarks = this.phaseMarks.filter((m) => m.fromThrow !== fromThrow);
+        this.phaseMarks.push({ fromThrow, phase });
+        this.phaseMarks.sort((a, b) => a.fromThrow - b.fromThrow);
+    }
+
+    /** Welche Phase gilt fuer diese Wurfnummer -- Handmarke schlaegt Automatik. */
+    phaseAt(throwNumber) {
+        let gesetzt = null;
+        for (const mark of this.phaseMarks) {
+            if (mark.fromThrow <= throwNumber) gesetzt = mark.phase;
+        }
+        return gesetzt ?? automaticPhase(throwNumber);
+    }
+
+    /**
+     * Haelt fest, was der Nutzer stattdessen gesehen hat.
+     *
+     * `pins` ist die Liste der wirklich gefallenen Kegel; `null` nimmt die
+     * Korrektur zurueck. Die Datenbank bleibt unberuehrt.
+     */
+    correct(id, pins, note = "") {
+        if (id === null || id === undefined) return;
+        if (pins === null) {
+            delete this.corrections[id];
+            return;
+        }
+        this.corrections[id] = {
+            pins: [...new Set(pins)].filter((p) => ALL_PINS.includes(p))
+                .sort((a, b) => a - b),
+            note: String(note || ""),
+        };
     }
 
     /**
@@ -601,6 +788,10 @@ class LaneTicker {
      */
     rows() {
         const counter = new Map();
+        // Das stehende Bild je Abschnitt. Im Abraeumen wird in das geworfen,
+        // was uebrig geblieben ist -- in die Vollen steht immer alles.
+        const bild = new Map();
+
         return this.throws.map((row) => {
             const ms = throwTime(row);
             const segment = this.segmentOf(ms);
@@ -609,17 +800,53 @@ class LaneTicker {
                 number = (counter.get(segment) || 0) + 1;
                 counter.set(segment, number);
             }
-            const fallen = [...(row.pins || [])].sort((a, b) => a - b);
+
+            const gemessen = [...(row.pins || [])].sort((a, b) => a - b);
+            const korrektur = row.id !== null && row.id !== undefined
+                ? this.corrections[row.id] : undefined;
+            const fallen = korrektur ? korrektur.pins : gemessen;
+
+            // Ausserhalb eines Abschnitts (Warmwerfen) wird nicht Buch gefuehrt:
+            // Dort ist kein Spielstand bekannt, also gilt das volle Bild.
+            const phase = number === null ? PHASE_VOLLEN : this.phaseAt(number);
+
+            const stehendVorher = phase === PHASE_ABRAEUMEN
+                ? (bild.get(segment) || ALL_PINS)
+                : ALL_PINS;
+
+            // Faellt ein Kegel, der laut unserem Bild gar nicht mehr stand, ist
+            // etwas nicht in Ordnung -- meist fehlt ein Wurf. Das wird GEZEIGT
+            // und das Bild zurueckgesetzt, statt still weiterzurechnen.
+            const vorher = new Set(stehendVorher);
+            const conflict = fallen.some((p) => !vorher.has(p));
+            const basis = conflict ? ALL_PINS : stehendVorher;
+
+            const weg = new Set(fallen);
+            const standing = basis.filter((p) => !weg.has(p));
+            const fresh = needsFreshPicture(standing);
+            if (segment > 0) {
+                bild.set(segment, phase === PHASE_VOLLEN || fresh
+                    ? ALL_PINS : standing);
+            }
+
             return {
                 id: row.id ?? null,
                 lane: this.lane,
                 time: ms,
                 segment,
                 throwNumber: number,
-                value: row.pins_count ?? 0,
+                phase,
+                value: fallen.length,
                 fallen,
-                standing: standingPins(fallen),
-                miss: (row.pins_count ?? 0) === 0,
+                measured: gemessen,
+                corrected: Boolean(korrektur),
+                note: korrektur ? korrektur.note : "",
+                before: basis,          // das Bild, in das geworfen wurde
+                standing,               // was danach noch steht
+                gone: ALL_PINS.filter((p) => !basis.includes(p)),
+                conflict,
+                freshPicture: fresh,
+                miss: fallen.length === 0,
                 videoTime: row.video_time_s ?? null,
             };
         });
@@ -674,8 +901,16 @@ function csvField(value) {
 }
 
 const CSV_HEADER = [
+    // Was gilt -- also mit Korrektur, falls eine gesetzt wurde.
     "Zeitpunkt", "Bahn", "Abschnitt", "Wurfnummer", "Wert",
     "Gefallene Kegel", "Stehende Kegel", "Fehlwurf", "VideoZeit", "Id",
+    // Bild und Phase.
+    "Phase", "Bild vorher", "Neues Bild",
+    // Die Spur der Korrektur: Was die Erkennung GEMESSEN hat, bleibt erhalten.
+    // Ohne diese drei Spalten waere hinterher nicht mehr zu sehen, wo ein
+    // Mensch eingegriffen hat -- und genau das ist die interessante Stelle.
+    "Korrigiert", "Gemessen Wert", "Gemessene Kegel", "Bemerkung",
+    "Widerspruch",
 ];
 
 /**
@@ -703,6 +938,14 @@ function csvText(rows) {
             r.miss ? "ja" : "nein",
             r.videoTime === null ? "" : String(r.videoTime).replace(".", ","),
             r.id ?? "",
+            r.phase === PHASE_ABRAEUMEN ? "Abraeumen" : "Vollen",
+            r.before.join(" "),
+            r.freshPicture ? "ja" : "nein",
+            r.corrected ? "ja" : "nein",
+            r.corrected ? r.measured.length : "",
+            r.corrected ? r.measured.join(" ") : "",
+            r.note || "",
+            r.conflict ? "ja" : "nein",
         ].map(csvField).join(";"));
     }
     // Abschliessender Zeilenumbruch: Ohne ihn haengt beim naechsten Schreiben
@@ -882,13 +1125,25 @@ function ladeGespeichertes() {
     for (const [bahn, segmente] of Object.entries(gespeichert.segmente || {})) {
         holeTicker(Number(bahn)).segments = segmente;
     }
+    // Phasenmarken und Korrekturen ebenso: Beides ist Handarbeit des Nutzers
+    // und darf ein Neuladen nicht kosten.
+    for (const [bahn, marken] of Object.entries(gespeichert.phasen || {})) {
+        holeTicker(Number(bahn)).phaseMarks = marken;
+    }
+    for (const [bahn, k] of Object.entries(gespeichert.korrekturen || {})) {
+        holeTicker(Number(bahn)).corrections = k;
+    }
     return gespeichert;
 }
 
 function sichere() {
     const segmente = {};
+    const phasen = {};
+    const korrekturen = {};
     for (const [bahn, t] of zustand.ticker) {
         if (t.segments.length) segmente[bahn] = t.segments;
+        if (t.phaseMarks.length) phasen[bahn] = t.phaseMarks;
+        if (Object.keys(t.corrections).length) korrekturen[bahn] = t.corrections;
     }
     try {
         localStorage.setItem(SPEICHER, JSON.stringify({
@@ -897,6 +1152,8 @@ function sichere() {
             fokus: zustand.fokus,
             since: zustand.since,
             segmente,
+            phasen,
+            korrekturen,
         }));
     } catch (fehler) {
         console.warn("Einstellungen konnten nicht gesichert werden", fehler);
@@ -910,18 +1167,30 @@ function holeTicker(bahn) {
 
 /* --------------------------------------------------------------- Kegelbild */
 
-/** Zeichnet die Raute: gefallene Kegel leuchten, stehende bleiben dunkel. */
-function rauteSvg(gefallen, breite) {
+/**
+ * Zeichnet die Raute mit DREI Zustaenden.
+ *
+ * Im Abraeumen wird in das stehende Bild geworfen. Ein Kegel, der schon vor
+ * diesem Wurf lag, muss deshalb anders aussehen als einer, der noch steht --
+ * sonst waere aus dem Bild nicht zu erkennen, worauf ueberhaupt geworfen wurde.
+ *
+ *   gefallen -- in DIESEM Wurf gefallen
+ *   steht    -- stand vorher und steht noch
+ *   weg      -- lag schon vorher
+ */
+function rauteSvg(gefallen, breite, weg = []) {
     const unten = new Set(gefallen || []);
+    const schonWeg = new Set(weg || []);
     let kreise = "";
     for (const [pin, [spalte, reihe]] of Object.entries(PIN_LAYOUT)) {
-        const klasse = unten.has(Number(pin)) ? "gefallen" : "steht";
+        const nr = Number(pin);
+        const klasse = unten.has(nr) ? "gefallen" : (schonWeg.has(nr) ? "weg" : "steht");
         kreise += `<circle class="${klasse}" cx="${12 + spalte * 19}" `
                 + `cy="${12 + reihe * 21.5}" r="7"></circle>`;
     }
-    const text = unten.size
-        ? `Gefallen: ${[...unten].sort((a, b) => a - b).join(", ")}`
-        : "Kein Kegel gefallen";
+    const liste = (s) => [...s].sort((a, b) => a - b).join(", ");
+    const text = (unten.size ? `Gefallen: ${liste(unten)}` : "Kein Kegel gefallen")
+        + (schonWeg.size ? `. Lag schon: ${liste(schonWeg)}` : "");
     return `<svg class="raute" viewBox="0 0 100 110" width="${breite}" `
          + `height="${Math.round(breite * 1.1)}" role="img" aria-label="${text}">`
          + `${kreise}</svg>`;
@@ -979,6 +1248,24 @@ function baueKarten(bahnen) {
             zeichne();
             sichere();
         });
+        karte.querySelector("button.phase").addEventListener("click", () => {
+            // Die Marke gilt AB DEM NAECHSTEN Wurf. Rueckwirkend zu aendern
+            // waere gefaehrlich: Das Bild der bereits gezeigten Wuerfe wuerde
+            // sich unter der Hand verschieben.
+            const t = holeTicker(bahn);
+            const naechster = t.stats().count + 1;
+            const jetzt = t.phaseAt(naechster);
+            t.setPhase(naechster,
+                jetzt === PHASE_VOLLEN ? PHASE_ABRAEUMEN : PHASE_VOLLEN);
+            zeichne();
+            sichere();
+        });
+        karte.querySelector("button.phase-auto").addEventListener("click", () => {
+            const t = holeTicker(bahn);
+            t.setPhase(t.stats().count + 1, null);
+            zeichne();
+            sichere();
+        });
         ziel.appendChild(karte);
     }
     zustand.gezeichnet = [...bahnen];
@@ -1018,10 +1305,26 @@ function fuelleKarte(karte, bahn) {
         ? (t.running ? `Abschnitt ${t.segments.length} läuft` : `Abschnitt ${t.segments.length} beendet`)
         : "Warmwerfen — noch nicht gestartet";
 
-    // Kopf: was zuletzt auf dieser Bahn gefallen ist.
-    karte.querySelector(".raute-gross").innerHTML = rauteSvg(letzter ? letzter.fallen : [], 96);
+    // Phase: was gilt fuer den NAECHSTEN Wurf.
+    const naechster = kennzahlen.count + 1;
+    const phase = t.phaseAt(naechster);
+    const vonHand = t.phaseMarks.some((m) => m.fromThrow <= naechster && m.phase);
+    const phasenKnopf = karte.querySelector("button.phase");
+    phasenKnopf.textContent = phase === PHASE_ABRAEUMEN ? "Abräumen" : "Vollen";
+    phasenKnopf.dataset.phase = phase;
+    phasenKnopf.dataset.vonHand = vonHand ? "ja" : "nein";
+    phasenKnopf.title = vonHand
+        ? "von Hand gesetzt — klicken zum Umschalten"
+        : `automatisch (Wurf ${naechster}) — klicken zum Umschalten`;
+    karte.querySelector("button.phase-auto").hidden = !vonHand;
+
+    // Kopf: was zuletzt auf dieser Bahn gefallen ist, im Bild jenes Wurfs.
+    karte.querySelector(".raute-gross").innerHTML = letzter
+        ? rauteSvg(letzter.fallen, 96, letzter.gone)
+        : rauteSvg([], 96);
     karte.querySelector(".letzter-text").textContent = letzter
         ? `${letzter.value} gefallen · ${letzter.standing.length} stehen`
+          + (letzter.gone.length ? ` · ${letzter.gone.length} lagen schon` : "")
         : "noch kein Wurf";
 
     karte.querySelector(".k-summe").textContent = String(kennzahlen.total);
@@ -1038,17 +1341,103 @@ function fuelleKarte(karte, bahn) {
         const tr = document.createElement("tr");
         if (z.segment === 0) tr.classList.add("ausserhalb");
         if (z.miss) tr.classList.add("fehlwurf");
+        if (z.corrected) tr.classList.add("korrigiert");
+        if (z.conflict) tr.classList.add("widerspruch");
         if (z.id !== null && !bekannt.has(z.id)) tr.classList.add("neu");
+        const marke = (z.corrected ? '<span class="marke korr" title="von Hand '
+                + 'korrigiert">korr.</span>' : "")
+            + (z.conflict ? '<span class="marke konflikt" title="Ein Kegel fiel, '
+                + 'der laut Bild nicht mehr stand — fehlt ein Wurf?">?</span>' : "");
         tr.innerHTML =
             `<td class="nr">${z.throwNumber ?? "–"}</td>`
           + `<td class="wert">${z.value}</td>`
           + `<td class="kegel">${z.fallen.length ? z.fallen.join(" ") : "–"}</td>`
-          + `<td>${rauteSvg(z.fallen, 34)}</td>`
-          + `<td class="zeit">${formatClock(z.time)}</td>`;
+          + `<td>${rauteSvg(z.fallen, 34, z.gone)}</td>`
+          + `<td class="zeit">${formatClock(z.time)}</td>`
+          + `<td class="marken">${marke}</td>`;
+        if (z.id !== null) {
+            tr.classList.add("klickbar");
+            tr.title = "Anklicken zum Korrigieren";
+            tr.addEventListener("click", () => oeffneKorrektur(bahn, z));
+        }
         koerper.appendChild(tr);
     }
     zustand.bekannteIds.set(bahn, new Set(zeilen.map((z) => z.id)));
     return zeilen.length > 0;
+}
+
+/* -------------------------------------------------------------- Korrektur */
+
+// Welcher Wurf gerade im Korrekturdialog liegt, und welche Kegel dort
+// angeklickt sind. Bewusst getrennt vom Ticker: Solange nicht uebernommen
+// wurde, darf nichts an den Daten haengen bleiben.
+let korrekturZiel = null;
+let korrekturAuswahl = new Set();
+
+function zeichneKorrekturRaute() {
+    const behaelter = $("#korrektur-raute");
+    behaelter.innerHTML = "";
+    for (const pin of ALL_PINS) {
+        const [spalte, reihe] = PIN_LAYOUT[pin];
+        const knopf = document.createElement("button");
+        knopf.type = "button";
+        knopf.className = "kegel-knopf";
+        knopf.textContent = String(pin);
+        knopf.dataset.gefallen = korrekturAuswahl.has(pin) ? "ja" : "nein";
+        // Die Raute soll aussehen wie auf der Tafel -- deshalb absolut
+        // gesetzt, nicht als Raster. Angegeben wird der MITTELPUNKT (die CSS
+        // verschiebt um die halbe Kantenlaenge): Bei `left: 100%` haetten die
+        // Kegel der aeusseren Spalte sonst aus dem Rahmen geragt.
+        knopf.style.left = `${10 + spalte * 20}%`;
+        knopf.style.top = `${10 + reihe * 20}%`;
+        knopf.addEventListener("click", () => {
+            if (korrekturAuswahl.has(pin)) korrekturAuswahl.delete(pin);
+            else korrekturAuswahl.add(pin);
+            zeichneKorrekturRaute();
+        });
+        behaelter.appendChild(knopf);
+    }
+    const gewaehlt = [...korrekturAuswahl].sort((a, b) => a - b);
+    $("#korrektur-stand").textContent = gewaehlt.length
+        ? `${gewaehlt.length} gefallen: ${gewaehlt.join(", ")}`
+        : "kein Kegel gefallen (Fehlwurf)";
+}
+
+function oeffneKorrektur(bahn, zeile) {
+    korrekturZiel = { bahn, id: zeile.id };
+    korrekturAuswahl = new Set(zeile.fallen);
+
+    const nummer = zeile.throwNumber === null
+        ? "Warmwerfen" : `Wurf ${zeile.throwNumber}`;
+    $("#korrektur-kopf").innerHTML =
+        `<b>Bahn ${bahn}, ${nummer}</b> um ${formatClock(zeile.time)}. `
+      + `Gemessen wurden <b>${zeile.measured.length}</b> Kegel`
+      + (zeile.measured.length ? ` (${zeile.measured.join(", ")})` : "")
+      + (zeile.gone.length
+          ? `. Vor dem Wurf lagen bereits: ${zeile.gone.join(", ")}.` : ".");
+
+    const t = holeTicker(bahn);
+    $("#korrektur-notiz").value = (t.corrections[zeile.id] || {}).note || "";
+    zeichneKorrekturRaute();
+    $("#dlg-korrektur").showModal();
+}
+
+function uebernehmeKorrektur(entscheidung) {
+    if (korrekturZiel === null) return;
+    const t = holeTicker(korrekturZiel.bahn);
+    if (entscheidung === "zuruecknehmen") {
+        t.correct(korrekturZiel.id, null);
+    } else if (entscheidung === "ok") {
+        t.correct(korrekturZiel.id, [...korrekturAuswahl],
+                  $("#korrektur-notiz").value.trim());
+    }
+    korrekturZiel = null;
+    if (entscheidung !== "abbruch") {
+        zustand.csvStand.clear();   // die CSV muss neu geschrieben werden
+        zeichne();
+        sichere();
+        schreibeCsv();
+    }
 }
 
 /* -------------------------------------------------------------------- CSV */
@@ -1295,6 +1684,12 @@ function start() {
         for (const bahn of zustand.gewaehlt) holeTicker(bahn).stop(jetzt);
         zeichne();
         sichere();
+    });
+
+    // Am `submit`, nicht am `close` -- siehe die Begruendung beim
+    // Einstellungsdialog: `close` kommt nicht ueberall an.
+    $("#korrektur-form").addEventListener("submit", (ev) => {
+        uebernehmeKorrektur(ev.submitter ? ev.submitter.value : "abbruch");
     });
 
     $("#btn-ordner").addEventListener("click", waehleOrdner);
