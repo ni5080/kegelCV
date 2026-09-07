@@ -411,6 +411,21 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
     .tabelle-rahmen { max-height: none; }
 }
 
+/* -------------------------------------------------- Beleg im Korrekturdialog */
+
+.beleg { margin: 0; text-align: center; }
+.beleg img {
+    /* Der Ausschnitt ist rund 152 px breit -- vergroessert dargestellt, damit
+       die Lampen und Ziffern erkennbar bleiben. `pixelated`, weil Glaetten die
+       einzelnen Lampen ineinanderlaufen liesse. */
+    width: min(280px, 100%);
+    image-rendering: pixelated;
+    border-radius: 6px;
+    border: 1px solid var(--karte-rand);
+    background: #000;
+}
+.beleg figcaption { margin-top: 5px; }
+
 </style>
 </head>
 <body>
@@ -541,6 +556,12 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
       dabei <b>nicht</b> geändert — die Messung bleibt erhalten und steht in der
       CSV daneben.
     </p>
+
+    <figure id="korrektur-beleg" class="beleg" hidden>
+      <img id="korrektur-bild" alt="Anzeigetafel im Moment des Wurfs">
+      <figcaption class="hinweis">Die Anzeigetafel in dem Frame, aus dem das Ergebnis stammt.</figcaption>
+    </figure>
+    <p id="korrektur-beleg-fehlt" class="hinweis" hidden></p>
 
     <div id="korrektur-raute" class="korrektur-raute"></div>
     <p id="korrektur-stand" class="hinweis"></p>
@@ -1032,6 +1053,33 @@ class ThrowFeed {
     }
 
     /**
+     * Holt das Tafelbild EINES Wurfs -- erst beim Anklicken.
+     *
+     * Bewusst nicht in `fetchNew`: Das Bild ist um ein Vielfaches groesser als
+     * die uebrigen Felder zusammen. In der Liveliste laege es nur herum, in
+     * der Korrektur ist es das Entscheidende.
+     *
+     * Gibt `null` zurueck, wenn es keines gibt -- auch dann, wenn die Spalte in
+     * der Tabelle noch fehlt. Ein fehlendes Bild ist kein Grund, den Dialog
+     * scheitern zu lassen.
+     */
+    async fetchBoardImage(id) {
+        if (id === null || id === undefined) return null;
+        const url = `${this.endpoint}?select=board_jpeg&id=eq.${encodeURIComponent(id)}`;
+        try {
+            const antwort = await fetch(url, {
+                headers: { apikey: this.key, Authorization: `Bearer ${this.key}` },
+            });
+            if (!antwort.ok) return null;
+            const zeilen = await antwort.json();
+            return (zeilen[0] && zeilen[0].board_jpeg) || null;
+        } catch (fehler) {
+            console.warn("Tafelbild nicht abrufbar", fehler);
+            return null;
+        }
+    }
+
+    /**
      * Holt alles, was seit dem letzten Aufruf dazugekommen ist.
      *
      * Kommt eine volle Seite zurueck, wird sofort weitergelesen -- sonst
@@ -1420,6 +1468,32 @@ function oeffneKorrektur(bahn, zeile) {
     $("#korrektur-notiz").value = (t.corrections[zeile.id] || {}).note || "";
     zeichneKorrekturRaute();
     $("#dlg-korrektur").showModal();
+
+    // Der Beleg kommt NACH dem Oeffnen: Er ist eine eigene Abfrage, und der
+    // Dialog soll nicht darauf warten. Die id wird mitgefuehrt, damit ein
+    // spaet eintreffendes Bild nicht im falschen Wurf landet.
+    const fuer = zeile.id;
+    $("#korrektur-beleg").hidden = true;
+    $("#korrektur-beleg-fehlt").hidden = false;
+    $("#korrektur-beleg-fehlt").textContent = "Tafelbild wird geladen …";
+    ladeBeleg(fuer);
+}
+
+async function ladeBeleg(fuer) {
+    const bild = zustand.feed ? await zustand.feed.fetchBoardImage(fuer) : null;
+    // Inzwischen ein anderer Wurf offen? Dann gehoert dieses Bild nicht hierher.
+    if (korrekturZiel === null || korrekturZiel.id !== fuer) return;
+    if (bild) {
+        $("#korrektur-bild").src = `data:image/jpeg;base64,${bild}`;
+        $("#korrektur-beleg").hidden = false;
+        $("#korrektur-beleg-fehlt").hidden = true;
+    } else {
+        $("#korrektur-beleg").hidden = true;
+        $("#korrektur-beleg-fehlt").hidden = false;
+        $("#korrektur-beleg-fehlt").textContent =
+            "Kein Tafelbild zu diesem Wurf — er stammt aus einem Lauf, der noch "
+            + "keine Bilder mitgeschickt hat.";
+    }
 }
 
 function uebernehmeKorrektur(entscheidung) {
