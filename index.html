@@ -26,6 +26,12 @@
 
 * { box-sizing: border-box; }
 
+/* `hidden` muss staerker sein als jede Klasse, die `display` setzt.
+   Die eingebaute Regel des Browsers ist nur `[hidden] { display: none }` und
+   verliert damit gegen jeden Klassenselektor -- der Verbindungsblock im Dialog
+   blieb dadurch sichtbar, obwohl er ausgeblendet war (gemessen 2026-09-07). */
+[hidden] { display: none !important; }
+
 body {
     margin: 0;
     background: var(--grund);
@@ -415,20 +421,29 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 </template>
 
 <dialog id="dlg-einstellungen">
-  <form method="dialog" class="einstellungen">
-    <h2>Verbindung</h2>
-    <label>Projekt-URL
-      <input type="url" id="cfg-url" placeholder="https://….supabase.co" required>
-    </label>
-    <label>Schlüssel <small>(publishable / anon — nicht der geheime)</small>
-      <input type="password" id="cfg-key" required>
-    </label>
-    <label>Tabelle
-      <input type="text" id="cfg-table" value="throws" required>
-    </label>
+  <form method="dialog" class="einstellungen" id="cfg-form">
+    <h2 id="cfg-titel">Einstellungen</h2>
+
+    <!-- Wird ausgeblendet, sobald URL und Schlüssel fest eingebaut sind
+         (build.py). Dann bleibt nur noch die Bahnauswahl übrig. -->
+    <div id="cfg-verbindung" class="einstellungen">
+      <label>Projekt-URL
+        <input type="url" id="cfg-url" placeholder="https://….supabase.co">
+      </label>
+      <label>Schlüssel <small>(publishable / anon — nicht der geheime)</small>
+        <input type="password" id="cfg-key">
+      </label>
+      <label>Tabelle
+        <input type="text" id="cfg-table" value="throws">
+      </label>
+    </div>
+
     <label>Bahnnummern <small>(durch Komma getrennt)</small>
       <input type="text" id="cfg-lanes" placeholder="2,3,4,5">
     </label>
+    <small id="cfg-fest" class="hinweis" hidden>
+      Verbindung ist fest eingebaut — es sind nur die Bahnnummern einzustellen.
+    </small>
     <div class="dlg-knoepfe">
       <button value="abbruch" class="ghost" type="submit">Abbrechen</button>
       <button value="ok" id="cfg-ok" type="submit">Übernehmen</button>
@@ -438,7 +453,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 
 <!-- Wird von start.py aus config/default.yaml und .env erzeugt und ist über
      .gitignore ausgeschlossen. Fehlt sie, fragt der Einstellungsdialog. -->
-
+<script>window.LIVETICKER_CONFIG = {"url": "https://jnqxfqolxwuqqgwezlhj.supabase.co", "table": "throws", "key": "sb_publishable_paPF7YP23-kXtQ3qIEpB8w_VMYmz_3g", "lanes": [2, 3, 4, 5]};</script>
 <script type="module">
 /* ===== ticker.js ===== */
 /**
@@ -818,6 +833,7 @@ const SPEICHER = "kegel.liveticker";
 
 const zustand = {
     cfg: { url: "", key: "", table: "throws", lanes: [2, 3, 4, 5] },
+    fest: false,               // Verbindung fest eingebaut? Dann nur Bahnen fragen
     gewaehlt: new Set(),
     fokus: null,
     since: null,               // ISO-Zeitpunkt, ab dem gelesen wird
@@ -843,13 +859,19 @@ function ladeGespeichertes() {
         console.warn("Gespeicherte Einstellungen unlesbar, starte mit Vorgaben", fehler);
     }
 
-    // Vorbelegung aus config.local.js (von start.py erzeugt) -- sie gewinnt
-    // nur dort, wo noch nichts gespeichert ist.
+    // Fest eingebaute Verbindung (von build.py oder start.py). Sie GEWINNT
+    // gegen den lokalen Speicher -- andernfalls behielte der Browser nach
+    // einem neuen Bau stillschweigend den alten Schluessel, und niemand kaeme
+    // darauf, warum die Seite plaetzlich nichts mehr liest.
+    //
+    // Die Bahnnummern sind davon ausgenommen: Sie sind die eine Einstellung,
+    // die der Nutzer vor Ort trifft, und sollen ein Neuladen ueberstehen.
     const ausDatei = window.LIVETICKER_CONFIG || {};
+    zustand.fest = Boolean(ausDatei.url && ausDatei.key);
     zustand.cfg = {
-        url: gespeichert.url || ausDatei.url || "",
-        key: gespeichert.key || ausDatei.key || "",
-        table: gespeichert.table || ausDatei.table || "throws",
+        url: ausDatei.url || gespeichert.url || "",
+        key: ausDatei.key || gespeichert.key || "",
+        table: ausDatei.table || gespeichert.table || "throws",
         lanes: gespeichert.lanes || ausDatei.lanes || [2, 3, 4, 5],
     };
     zustand.gewaehlt = new Set(gespeichert.gewaehlt || zustand.cfg.lanes);
@@ -1189,6 +1211,12 @@ function ausAdresse() {
 }
 
 function oeffneEinstellungen() {
+    // Ist die Verbindung fest eingebaut, waeren URL und Schluessel hier nur
+    // Felder, die nichts bewirken -- die Datei gewinnt ohnehin. Also weg damit.
+    $("#cfg-verbindung").hidden = zustand.fest;
+    $("#cfg-fest").hidden = !zustand.fest;
+    $("#cfg-titel").textContent = zustand.fest ? "Bahnen" : "Verbindung";
+
     $("#cfg-url").value = zustand.cfg.url;
     $("#cfg-key").value = zustand.cfg.key;
     $("#cfg-table").value = zustand.cfg.table;
@@ -1207,12 +1235,24 @@ function start() {
     ausAdresse();
     $("#ab-zeit").value = insEingabefeld(zustand.since);
 
+    // Ist die Verbindung fest eingebaut, geht es hinter dem Knopf nur noch
+    // um die Bahnen -- dann soll er auch das sagen.
+    if (zustand.fest) $("#btn-einstellungen").textContent = "Bahnen";
     $("#btn-einstellungen").addEventListener("click", oeffneEinstellungen);
-    $("#dlg-einstellungen").addEventListener("close", (ev) => {
-        if (ev.target.returnValue !== "ok") return;
-        zustand.cfg.url = $("#cfg-url").value.trim();
-        zustand.cfg.key = $("#cfg-key").value.trim();
-        zustand.cfg.table = $("#cfg-table").value.trim() || "throws";
+    // Am `submit` des Formulars, NICHT am `close` des Dialogs.
+    //
+    // GEMESSEN am 2026-09-07: In der Vorschau-Umgebung feuerte `close` gar
+    // nicht -- auch nicht bei einem manuellen `dialog.close()`. Die Eingaben
+    // wurden dadurch stillschweigend verworfen. `submit` kam zuverlaessig an
+    // und ist ohnehin der genauere Anknuepfungspunkt: Es sagt, dass jemand
+    // uebernehmen WOLLTE, waehrend `close` auch bei Escape ausgeloest wird.
+    $("#cfg-form").addEventListener("submit", (ev) => {
+        if (ev.submitter && ev.submitter.value !== "ok") return;
+        if (!zustand.fest) {
+            zustand.cfg.url = $("#cfg-url").value.trim();
+            zustand.cfg.key = $("#cfg-key").value.trim();
+            zustand.cfg.table = $("#cfg-table").value.trim() || "throws";
+        }
         const liste = $("#cfg-lanes").value.split(",")
             .map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
         if (liste.length) {
