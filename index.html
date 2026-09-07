@@ -1,0 +1,1282 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kegel-Liveticker</title>
+<style>
+/*
+ * Dunkle Darstellung, bewusst und ohne Umschalter: Der Ticker steht neben der
+ * Bahn in einer abgedunkelten Halle. Die Zahlen sollen aus zwei Metern lesbar
+ * sein, deshalb sind sie gross und die Beschriftungen klein.
+ */
+
+:root {
+    --grund:      #14161a;
+    --karte:      #1c1f26;
+    --karte-rand: #2b303a;
+    --schrift:    #e8eaee;
+    --gedaempft:  #9aa2b1;
+    --akzent:     #ffaa3c;   /* Gefallene Kegel -- wie die Lampen der Tafel */
+    --akzent-warm:#ffd28a;
+    --gruen:      #4ec97a;
+    --rot:        #e2565a;
+    --stehend:    #3a4150;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: var(--grund);
+    color: var(--schrift);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-text-size-adjust: 100%;
+}
+
+/* ---------------------------------------------------------------- Kopfzeile */
+
+.topbar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 10px 16px;
+    background: var(--karte);
+    border-bottom: 1px solid var(--karte-rand);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+}
+
+.topbar h1 {
+    margin: 0;
+    font-size: 17px;
+    letter-spacing: 0.02em;
+}
+
+.verbindung {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    color: var(--gedaempft);
+    font-size: 13px;
+}
+
+.ampel {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--stehend);
+    flex: none;
+}
+.ampel[data-zustand="an"]     { background: var(--gruen); }
+.ampel[data-zustand="fehler"] { background: var(--rot); }
+
+/* --------------------------------------------------------------- Steuerung */
+
+.steuerung {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--karte-rand);
+}
+
+.feld { display: flex; flex-direction: column; gap: 6px; }
+.feld.wachsend { flex: 1 1 240px; }
+
+.feld > label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--gedaempft);
+}
+
+.zeile { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+input[type="datetime-local"],
+input[type="text"],
+input[type="url"],
+input[type="password"] {
+    background: var(--grund);
+    color: var(--schrift);
+    border: 1px solid var(--karte-rand);
+    border-radius: 7px;
+    padding: 7px 9px;
+    font: inherit;
+    color-scheme: dark;
+}
+
+button {
+    font: inherit;
+    font-weight: 600;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    padding: 7px 14px;
+    cursor: pointer;
+    background: var(--akzent);
+    color: #23180a;
+}
+button:disabled { opacity: 0.4; cursor: default; }
+
+button.ghost {
+    background: transparent;
+    border-color: var(--karte-rand);
+    color: var(--schrift);
+}
+button.klein { padding: 5px 10px; font-size: 13px; font-weight: 500; }
+button.start { background: var(--gruen); color: #0d2116; }
+button.stopp { background: transparent; border-color: var(--rot); color: var(--rot); }
+
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.chip {
+    background: transparent;
+    border: 1px solid var(--karte-rand);
+    color: var(--gedaempft);
+    border-radius: 999px;
+    padding: 6px 14px;
+    font-weight: 600;
+}
+.chip[aria-pressed="true"] {
+    border-color: var(--akzent);
+    color: var(--akzent);
+    background: rgba(255, 170, 60, 0.10);
+}
+/* Sichtbar heisst: steht gerade wirklich im Bild. Auf dem Handy ist das
+   hoechstens eine Bahn -- ohne diese Markierung waere nicht erkennbar, welche. */
+.chip[data-sichtbar="ja"] {
+    background: var(--akzent);
+    color: #23180a;
+    border-color: var(--akzent);
+}
+
+.hinweis { color: var(--gedaempft); font-size: 12px; }
+
+.meldung {
+    margin: 0;
+    padding: 10px 16px;
+    background: rgba(226, 86, 90, 0.15);
+    border-bottom: 1px solid var(--rot);
+    color: var(--akzent-warm);
+    font-size: 13px;
+}
+
+.leer { color: var(--gedaempft); padding: 40px 16px; text-align: center; }
+
+/* ------------------------------------------------------------ Bahnenraster */
+
+.bahnen {
+    display: grid;
+    gap: 14px;
+    padding: 14px 16px 40px;
+    grid-template-columns: repeat(var(--spalten, 2), minmax(0, 1fr));
+}
+
+.bahn {
+    background: var(--karte);
+    border: 1px solid var(--karte-rand);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
+    /* Der Kopfbereich richtet sich nach der Breite der KARTE, nicht nach der
+       des Fensters. Bei vier Bahnen nebeneinander sind die Karten schmal,
+       obwohl das Fenster breit ist -- an der Fensterbreite gemessen liefen die
+       Beschriftungen ineinander. */
+    container-type: inline-size;
+}
+.bahn[data-laeuft="ja"] { border-color: var(--gruen); }
+
+.bahn-kopf {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--karte-rand);
+}
+.bahn-name { margin: 0; font-size: 18px; white-space: nowrap; }
+.abschnitt { color: var(--gedaempft); font-size: 12px; margin-right: auto; }
+.bahn-kopf button { padding: 6px 12px; white-space: nowrap; }
+
+/* -------------------------------------------------------------- Kopfbereich */
+
+.hero {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 14px;
+    border-bottom: 1px solid var(--karte-rand);
+}
+
+.letzter-wurf { margin: 0; text-align: center; flex: none; }
+.letzter-text { color: var(--gedaempft); font-size: 12px; margin-top: 6px; }
+
+.kennzahlen {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    flex: 1;
+    min-width: 0;
+}
+.kennzahl { display: flex; flex-direction: column; min-width: 0; }
+.kennzahl b {
+    /* Nach oben begrenzt, weil die Gesamtsumme vierstellig wird: Bei 40 px
+       lief "2728" in die Nachbarspalte. Gemessen an einer Karte von 430 px. */
+    font-size: clamp(20px, 8cqw, 34px);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+    line-height: 1.05;
+}
+.kennzahl span {
+    /* Klein und eng: "GESAMTSUMME" ist das laengste Wort und brach sonst mit
+       einem einzelnen "E" in die zweite Zeile um. */
+    font-size: clamp(9px, 2.2cqw, 10px);
+    text-transform: uppercase;
+    letter-spacing: 0.01em;
+    color: var(--gedaempft);
+    overflow-wrap: anywhere;
+    hyphens: none;
+}
+.k-fehl { color: var(--rot); }
+
+/* Schmale Karte (vier Bahnen nebeneinander, oder Handy): Das Kegelbild steht
+   dann ueber den Zahlen statt daneben -- nebeneinander bliebe fuer beides zu
+   wenig Platz. */
+@container (max-width: 380px) {
+    .hero { flex-direction: column; align-items: stretch; gap: 12px; }
+    .letzter-wurf { align-self: center; }
+}
+
+/* ---------------------------------------------------------------- Tabelle */
+
+.tabelle-rahmen { overflow: auto; max-height: 46vh; }
+
+table.wuerfe { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+
+table.wuerfe th {
+    position: sticky;
+    top: 0;
+    background: var(--karte);
+    color: var(--gedaempft);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--karte-rand);
+}
+
+table.wuerfe td {
+    padding: 7px 10px;
+    border-bottom: 1px solid rgba(43, 48, 58, 0.6);
+    vertical-align: middle;
+}
+
+.nr   { font-weight: 700; }
+.wert { font-size: 20px; font-weight: 700; }
+.kegel { color: var(--gedaempft); font-size: 13px; letter-spacing: 0.08em; }
+.zeit  { color: var(--gedaempft); font-size: 12px; white-space: nowrap; }
+
+/* Ein Wurf ausserhalb eines Abschnitts -- Warmwerfen. Er wird gezeigt, aber er
+   zaehlt nicht: die Daempfung ist die Begruendung dafuer. */
+tr.ausserhalb { opacity: 0.42; }
+tr.fehlwurf .wert { color: var(--rot); }
+
+/* Neu eingetroffener Wurf blitzt kurz auf -- sonst uebersieht man ihn. */
+@keyframes neu {
+    from { background: rgba(255, 170, 60, 0.30); }
+    to   { background: transparent; }
+}
+tr.neu { animation: neu 1.6s ease-out; }
+@media (prefers-reduced-motion: reduce) { tr.neu { animation: none; } }
+
+/* ------------------------------------------------------------------- Raute */
+
+svg.raute .gefallen { fill: var(--akzent); stroke: var(--akzent-warm); }
+svg.raute .steht    { fill: var(--stehend); stroke: #4b5468; }
+svg.raute circle    { stroke-width: 1.5; }
+
+/* --------------------------------------------------------------- Dialog */
+
+dialog {
+    background: var(--karte);
+    color: var(--schrift);
+    border: 1px solid var(--karte-rand);
+    border-radius: 12px;
+    padding: 20px;
+    max-width: 420px;
+    width: calc(100% - 32px);
+}
+dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+.einstellungen { display: flex; flex-direction: column; gap: 12px; }
+.einstellungen h2 { margin: 0; font-size: 16px; }
+.einstellungen label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+.einstellungen small { color: var(--gedaempft); font-weight: 400; }
+.dlg-knoepfe { display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px; }
+
+/* --------------------------------------------------------------- Schmal */
+
+@media (max-width: 700px) {
+    .steuerung { gap: 12px; padding: 12px; }
+    .bahnen { padding: 12px 12px 32px; }
+    .hero { flex-direction: column; align-items: stretch; gap: 12px; }
+    .letzter-wurf { align-self: center; }
+    .tabelle-rahmen { max-height: none; }
+}
+
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <h1>Liveticker</h1>
+  <div class="verbindung">
+    <span id="ampel" class="ampel" data-zustand="aus"></span>
+    <span id="verbindungstext">nicht verbunden</span>
+  </div>
+  <button id="btn-einstellungen" class="ghost" type="button">Einstellungen</button>
+</header>
+
+<section class="steuerung">
+  <div class="feld">
+    <label for="ab-zeit">Würfe ab</label>
+    <div class="zeile">
+      <input type="datetime-local" id="ab-zeit" step="1">
+      <button id="btn-jetzt" class="ghost klein" type="button">jetzt</button>
+      <button id="btn-heute" class="ghost klein" type="button">heute</button>
+    </div>
+  </div>
+
+  <div class="feld wachsend">
+    <label>Bahnen</label>
+    <div id="bahn-chips" class="chips"></div>
+  </div>
+
+  <div class="feld">
+    <label>Alle Bahnen</label>
+    <div class="zeile">
+      <button id="btn-alle-start" class="start" type="button">Start</button>
+      <button id="btn-alle-stopp" class="stopp" type="button">Stopp</button>
+    </div>
+  </div>
+
+  <div class="feld">
+    <label>CSV je Bahn</label>
+    <div class="zeile">
+      <button id="btn-ordner" class="ghost" type="button">Ordner wählen</button>
+      <button id="btn-download" class="ghost klein" type="button">herunterladen</button>
+    </div>
+    <small id="ordner-text" class="hinweis">kein Ordner gewählt — es wird nichts gespeichert</small>
+  </div>
+</section>
+
+<p id="meldung" class="meldung" hidden></p>
+
+<main id="bahnen" class="bahnen"></main>
+
+<p id="leer" class="leer">Noch keine Würfe. Sobald die Analyse Würfe an Supabase meldet, erscheinen sie hier.</p>
+
+<!-- Vorlage einer Bahnkarte. Wird je sichtbarer Bahn geklont. -->
+<template id="vorlage-bahn">
+  <article class="bahn">
+    <header class="bahn-kopf">
+      <h2 class="bahn-name">Bahn</h2>
+      <span class="abschnitt"></span>
+      <div class="zeile">
+        <button class="start" type="button">Start</button>
+        <button class="stopp" type="button">Stopp</button>
+      </div>
+    </header>
+
+    <div class="hero">
+      <figure class="letzter-wurf">
+        <div class="raute-gross"></div>
+        <figcaption class="letzter-text">noch kein Wurf</figcaption>
+      </figure>
+      <div class="kennzahlen">
+        <div class="kennzahl"><b class="k-summe">0</b><span>Gesamtsumme</span></div>
+        <div class="kennzahl"><b class="k-fehl">0</b><span>Fehlwürfe</span></div>
+        <div class="kennzahl"><b class="k-anzahl">0</b><span>Würfe</span></div>
+      </div>
+    </div>
+
+    <div class="tabelle-rahmen">
+      <table class="wuerfe">
+        <thead>
+          <tr><th>Nr.</th><th>Wert</th><th>Kegel</th><th>Bild</th><th>Zeit</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </article>
+</template>
+
+<dialog id="dlg-einstellungen">
+  <form method="dialog" class="einstellungen">
+    <h2>Verbindung</h2>
+    <label>Projekt-URL
+      <input type="url" id="cfg-url" placeholder="https://….supabase.co" required>
+    </label>
+    <label>Schlüssel <small>(publishable / anon — nicht der geheime)</small>
+      <input type="password" id="cfg-key" required>
+    </label>
+    <label>Tabelle
+      <input type="text" id="cfg-table" value="throws" required>
+    </label>
+    <label>Bahnnummern <small>(durch Komma getrennt)</small>
+      <input type="text" id="cfg-lanes" placeholder="2,3,4,5">
+    </label>
+    <div class="dlg-knoepfe">
+      <button value="abbruch" class="ghost" type="submit">Abbrechen</button>
+      <button value="ok" id="cfg-ok" type="submit">Übernehmen</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Wird von start.py aus config/default.yaml und .env erzeugt und ist über
+     .gitignore ausgeschlossen. Fehlt sie, fragt der Einstellungsdialog. -->
+
+<script type="module">
+/* ===== ticker.js ===== */
+/**
+ * Ableitungslogik des Livetickers -- reine Funktionen, kein DOM, kein Netz.
+ *
+ * WARUM DIESE DATEI GETRENNT LIEGT
+ *
+ * Die Datenbank liefert bewusst nur GEMESSENES: Bahn, Anzahl gefallener Kegel,
+ * welche Kegel, Zeitpunkt. Wurfnummer, laufende Summe und Fehlwurfzahl stehen
+ * dort NICHT (siehe docs/SUPABASE_SETUP.md) -- genau diese abgeleiteten
+ * Groessen sind in der Bilderkennung dreimal schiefgegangen.
+ *
+ * Sie entstehen deshalb HIER, auf der Seite, die die Spielregeln kennt. Damit
+ * das nachpruefbar bleibt, ist diese Datei frei von Oberflaeche und Netzzugriff
+ * und wird von test/ticker.test.js durchgemessen.
+ */
+
+/**
+ * Kegel-Raute: Kegelnummer -> [Spalte 0..4, Zeile 0..4].
+ *
+ * Zeile 0 ist HINTEN, Zeile 4 ist VORN -- so, wie die Kamera die Bahn sieht.
+ * Kegel 1 steht vorn, Kegel 9 hinten. Identisch zu PIN_LAYOUT in
+ * src/kegel_cv/gui/lane_panel.py, damit beide Anwendungen dasselbe Bild zeigen.
+ *
+ *          9
+ *       7     8
+ *    4    5     6
+ *       2     3
+ *          1
+ */
+const PIN_LAYOUT = {
+    9: [2, 0],
+    7: [1, 1], 8: [3, 1],
+    4: [0, 2], 5: [2, 2], 6: [4, 2],
+    2: [1, 3], 3: [3, 3],
+    1: [2, 4],
+};
+
+const ALL_PINS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+/** Welche Kegel stehen geblieben sind -- die Gegenmenge der gefallenen. */
+function standingPins(fallen) {
+    const down = new Set(fallen || []);
+    return ALL_PINS.filter((pin) => !down.has(pin));
+}
+
+/**
+ * Zeitpunkt eines Wurfs in Millisekunden.
+ *
+ * Faellt der Zeitstempel aus, ist 0 die ehrlichere Antwort als "jetzt": Der
+ * Wurf rutscht dann an den Anfang und faellt auf, statt sich unbemerkt ans Ende
+ * zu setzen.
+ */
+function throwTime(row) {
+    const ms = Date.parse(row.recorded_at);
+    return Number.isNaN(ms) ? 0 : ms;
+}
+
+/**
+ * Sortiert nach Zeitpunkt, bei Gleichstand nach der laufenden `id`.
+ *
+ * Die id allein genuegt nicht: Nach einem Netzausfall liefert die Erkennung
+ * gepufferte Wuerfe nach, die bekommen dann hohe ids bei alten Zeitstempeln.
+ * Massgeblich ist, wann geworfen wurde.
+ */
+function compareThrows(a, b) {
+    return throwTime(a) - throwTime(b) || (a.id ?? 0) - (b.id ?? 0);
+}
+
+/**
+ * Fuehrt die Wuerfe EINER Bahn und die vom Nutzer gesetzten Abschnitte.
+ *
+ * Ein Abschnitt ist ein Start/Stopp-Paar. Abschnitt 0 bedeutet "ausserhalb" --
+ * das Warmwerfen und alles nach einem Stopp. Diese Wuerfe werden angezeigt und
+ * in die CSV geschrieben, aber NICHT gezaehlt: Das Warmwerfen soll sichtbar
+ * bleiben, ohne das Ergebnis zu verfaelschen.
+ */
+class LaneTicker {
+    constructor(lane) {
+        this.lane = lane;
+        this.throws = [];
+        this.segments = [];
+        this._seen = new Set();
+    }
+
+    /**
+     * Nimmt Zeilen aus der Datenbank auf und meldet, wie viele neu waren.
+     *
+     * Doppelte werden an der `id` erkannt. Das ist noetig, weil sich die
+     * Abfragefenster ueberlappen duerfen -- lieber eine Zeile zweimal holen als
+     * eine verpassen.
+     */
+    ingest(rows) {
+        let added = 0;
+        for (const row of rows || []) {
+            if (row.lane !== this.lane) continue;
+            const key = row.id ?? `${row.recorded_at}|${row.pins_count}`;
+            if (this._seen.has(key)) continue;
+            this._seen.add(key);
+            this.throws.push(row);
+            added += 1;
+        }
+        if (added) this.throws.sort(compareThrows);
+        return added;
+    }
+
+    /** Der laufende Abschnitt, oder null, wenn gerade keiner offen ist. */
+    get openSegment() {
+        const last = this.segments[this.segments.length - 1];
+        return last && last.stop === null ? last : null;
+    }
+
+    get running() {
+        return this.openSegment !== null;
+    }
+
+    /** Oeffnet einen neuen Abschnitt. Ein bereits offener wird zuvor beendet. */
+    start(atMs) {
+        if (this.openSegment) this.stop(atMs);
+        this.segments.push({ nr: this.segments.length + 1, start: atMs, stop: null });
+        return this.segments[this.segments.length - 1];
+    }
+
+    /** Schliesst den laufenden Abschnitt. Ohne offenen Abschnitt passiert nichts. */
+    stop(atMs) {
+        const open = this.openSegment;
+        if (!open) return null;
+        open.stop = atMs;
+        return open;
+    }
+
+    /** Nummer des Abschnitts, in den dieser Zeitpunkt faellt -- 0 = ausserhalb. */
+    segmentOf(ms) {
+        for (const seg of this.segments) {
+            if (ms >= seg.start && (seg.stop === null || ms <= seg.stop)) return seg.nr;
+        }
+        return 0;
+    }
+
+    /**
+     * Alle Wuerfe als Anzeigezeilen, aelteste zuerst.
+     *
+     * Die Wurfnummer zaehlt INNERHALB des Abschnitts. Wuerfe ausserhalb bekommen
+     * keine -- eine Nummer zu vergeben hiesse zu behaupten, sie gehoerten dazu.
+     */
+    rows() {
+        const counter = new Map();
+        return this.throws.map((row) => {
+            const ms = throwTime(row);
+            const segment = this.segmentOf(ms);
+            let number = null;
+            if (segment > 0) {
+                number = (counter.get(segment) || 0) + 1;
+                counter.set(segment, number);
+            }
+            const fallen = [...(row.pins || [])].sort((a, b) => a - b);
+            return {
+                id: row.id ?? null,
+                lane: this.lane,
+                time: ms,
+                segment,
+                throwNumber: number,
+                value: row.pins_count ?? 0,
+                fallen,
+                standing: standingPins(fallen),
+                miss: (row.pins_count ?? 0) === 0,
+                videoTime: row.video_time_s ?? null,
+            };
+        });
+    }
+
+    /**
+     * Kennzahlen eines Abschnitts: Gesamtsumme, Fehlwuerfe, Anzahl Wuerfe.
+     *
+     * Ein Fehlwurf ist ein Wurf mit null Kegeln -- abgeleitet, nicht gemeldet.
+     * Ohne Angabe gilt der zuletzt geoeffnete Abschnitt; gab es noch keinen,
+     * bleiben alle Zahlen bei null, statt heimlich das Warmwerfen mitzuzaehlen.
+     */
+    stats(segmentNr) {
+        const nr = segmentNr ?? (this.segments.length ? this.segments.length : 0);
+        const rows = nr > 0 ? this.rows().filter((r) => r.segment === nr) : [];
+        const total = rows.reduce((sum, r) => sum + r.value, 0);
+        return {
+            segment: nr,
+            total,
+            misses: rows.filter((r) => r.miss).length,
+            count: rows.length,
+            average: rows.length ? total / rows.length : 0,
+        };
+    }
+
+    /** Der zuletzt geworfene Wurf der Bahn -- auch wenn er ausserhalb liegt. */
+    latest() {
+        const rows = this.rows();
+        return rows.length ? rows[rows.length - 1] : null;
+    }
+}
+
+/** Ortszeit als `TT.MM.JJJJ HH:MM:SS` -- das Format, das Excel hier erwartet. */
+function formatLocal(ms) {
+    const d = new Date(ms);
+    const p = (n) => String(n).padStart(2, "0");
+    return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} `
+         + `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/** Nur die Uhrzeit -- fuer die Tabelle, wo das Datum nur Platz kostet. */
+function formatClock(ms) {
+    const d = new Date(ms);
+    const p = (n) => String(n).padStart(2, "0");
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/** Feld fuer die CSV absichern: Trennzeichen und Anfuehrungszeichen entschaerfen. */
+function csvField(value) {
+    const text = value === null || value === undefined ? "" : String(value);
+    return /[;"\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+const CSV_HEADER = [
+    "Zeitpunkt", "Bahn", "Abschnitt", "Wurfnummer", "Wert",
+    "Gefallene Kegel", "Stehende Kegel", "Fehlwurf", "VideoZeit", "Id",
+];
+
+/**
+ * Baut die vollstaendige CSV einer Bahn.
+ *
+ * Geschrieben werden ALLE Wuerfe, auch die ausserhalb der Abschnitte. Die
+ * Spalte `Abschnitt` haelt sie auseinander (0 = Warmwerfen bzw. nach Stopp).
+ * Wegzulassen, was nicht gezaehlt wird, hiesse Messwerte zu verlieren, die sich
+ * spaeter nicht wiederbeschaffen lassen.
+ *
+ * Trennzeichen ist das Semikolon und die Dezimalstelle ein Komma: So oeffnet
+ * die Datei sich hierzulande in Excel ohne Importdialog.
+ */
+function csvText(rows) {
+    const lines = [CSV_HEADER.join(";")];
+    for (const r of rows) {
+        lines.push([
+            formatLocal(r.time),
+            r.lane,
+            r.segment,
+            r.throwNumber ?? "",
+            r.value,
+            r.fallen.join(" "),
+            r.standing.join(" "),
+            r.miss ? "ja" : "nein",
+            r.videoTime === null ? "" : String(r.videoTime).replace(".", ","),
+            r.id ?? "",
+        ].map(csvField).join(";"));
+    }
+    // Abschliessender Zeilenumbruch: Ohne ihn haengt beim naechsten Schreiben
+    // die erste neue Zeile an der letzten alten.
+    return lines.join("\r\n") + "\r\n";
+}
+
+/**
+ * Wie viele Bahnen gleichzeitig gezeigt werden duerfen.
+ *
+ * Vom Nutzer vorgegeben: im Hochformat eine, auf kleinen Querformat-Schirmen
+ * zwei. Auf grossen Schirmen alle gewaehlten.
+ */
+function maxVisible(width, height, largeThreshold = 1100) {
+    if (height > width) return 1;
+    return width < largeThreshold ? 2 : 4;
+}
+
+/**
+ * Welche Bahnen tatsaechlich sichtbar sind.
+ *
+ * `focus` ist die Bahn, die der Nutzer zuletzt ausgewaehlt hat -- sie bleibt
+ * auch dann im Bild, wenn der Platz nur noch fuer eine reicht. Sonst waere die
+ * Auswahl auf dem Handy wirkungslos.
+ */
+function visibleLanes(selected, max, focus) {
+    const lanes = [...selected].sort((a, b) => a - b);
+    if (lanes.length <= max) return lanes;
+    const startAt = lanes.indexOf(focus);
+    if (startAt < 0) return lanes.slice(0, max);
+    // Ab der Fokusbahn fuellen und bei Bedarf vorne ergaenzen, damit immer
+    // genau `max` Bahnen im Bild stehen.
+    const chosen = lanes.slice(startAt, startAt + max);
+    const missing = max - chosen.length;
+    return missing > 0 ? lanes.slice(startAt - missing, startAt).concat(chosen) : chosen;
+}
+
+/* ===== feed.js ===== */
+/**
+ * Holt neue Wuerfe aus Supabase -- per PostgREST, ohne zusaetzliche Bibliothek.
+ *
+ * Warum Abfragen im Takt und kein Realtime-Abonnement: Ein Abonnement muss nach
+ * jedem Funkloch, jedem Standby und jedem Netzwechsel neu aufgebaut werden, und
+ * merkt selbst nicht immer, dass es taub geworden ist. Eine Abfrage alle
+ * anderthalb Sekunden ist fuer einen Ticker schnell genug und heilt sich von
+ * selbst: Die naechste Runde holt nach, was die vorige verpasst hat.
+ *
+ * Der Schluessel ist der oeffentliche (publishable/anon) Schluessel. Er steht
+ * ohnehin in jeder lesenden Anwendung -- der geheime Schluessel darf hier
+ * niemals landen, er umgeht die Zugriffsregeln.
+ */
+
+/** Fortlaufend groesste bereits geholte id -- die Marke, ab der weitergelesen wird. */
+class ThrowFeed {
+    constructor({ url, key, table = "throws", lanes = [], since = null, pageSize = 1000 }) {
+        if (!url || !key) throw new Error("Liveticker braucht Projekt-URL und Schluessel");
+        this.endpoint = `${url.replace(/\/+$/, "")}/rest/v1/${table}`;
+        this.key = key;
+        this.lanes = [...lanes];
+        this.since = since;
+        this.pageSize = pageSize;
+        this.lastId = 0;
+    }
+
+    /** Setzt die Leseposition zurueck -- noetig, wenn sich Zeitpunkt oder Bahnen aendern. */
+    reset({ lanes, since } = {}) {
+        if (lanes) this.lanes = [...lanes];
+        if (since !== undefined) this.since = since;
+        this.lastId = 0;
+    }
+
+    _url() {
+        const p = new URLSearchParams();
+        p.set("select", "id,lane,pins,pins_count,recorded_at,video_time_s,video_id");
+        p.set("order", "id.asc");
+        p.set("limit", String(this.pageSize));
+        if (this.lanes.length) p.set("lane", `in.(${this.lanes.join(",")})`);
+        if (this.since) p.set("recorded_at", `gte.${this.since}`);
+        // Die id ist die Leseposition, nicht der Zeitstempel: Nachgelieferte
+        // Wuerfe aus dem Versandpuffer haben alte Zeitstempel, aber neue ids.
+        // Nach Zeit zu lesen wuerde sie ueberspringen.
+        if (this.lastId) p.set("id", `gt.${this.lastId}`);
+        return `${this.endpoint}?${p.toString()}`;
+    }
+
+    /**
+     * Holt alles, was seit dem letzten Aufruf dazugekommen ist.
+     *
+     * Kommt eine volle Seite zurueck, wird sofort weitergelesen -- sonst
+     * haengt die Anzeige nach einer Pause minutenlang hinterher.
+     */
+    async fetchNew() {
+        const rows = [];
+        for (let seite = 0; seite < 50; seite += 1) {
+            const antwort = await fetch(this._url(), {
+                headers: { apikey: this.key, Authorization: `Bearer ${this.key}` },
+            });
+            if (!antwort.ok) {
+                // Den Antworttext mitgeben: PostgREST erklaert darin, WARUM es
+                // abgelehnt hat. Ohne ihn bleibt nur eine nackte Zahl.
+                const text = (await antwort.text()).slice(0, 200);
+                throw new Error(`HTTP ${antwort.status}: ${text}`);
+            }
+            const seiteRows = await antwort.json();
+            for (const r of seiteRows) {
+                rows.push(r);
+                if ((r.id ?? 0) > this.lastId) this.lastId = r.id;
+            }
+            if (seiteRows.length < this.pageSize) break;
+        }
+        return rows;
+    }
+}
+
+/* ===== app.js ===== */
+/**
+ * Oberflaeche des Livetickers: Verdrahtung von Abfrage, Anzeige und CSV.
+ *
+ * Die eigentliche Rechenarbeit steht in ticker.js und ist dort getestet. Hier
+ * passiert nur, was ohne Browser ohnehin nicht pruefbar waere.
+ */
+
+
+const ABFRAGETAKT_MS = 1500;
+const SPEICHER = "kegel.liveticker";
+
+/* ------------------------------------------------------------- Zustand */
+
+const zustand = {
+    cfg: { url: "", key: "", table: "throws", lanes: [2, 3, 4, 5] },
+    gewaehlt: new Set(),
+    fokus: null,
+    since: null,               // ISO-Zeitpunkt, ab dem gelesen wird
+    ticker: new Map(),         // Bahnnummer -> LaneTicker
+    feed: null,
+    ordner: null,              // FileSystemDirectoryHandle
+    gezeichnet: [],            // welche Bahnen gerade als Karte im DOM stehen
+    bekannteIds: new Map(),    // Bahnnummer -> Set der bereits gezeigten Wurf-ids
+    csvStand: new Map(),       // Bahnnummer -> zuletzt geschriebener CSV-Text
+};
+
+const $ = (sel) => document.querySelector(sel);
+
+/* --------------------------------------------------- Einstellungen sichern */
+
+function ladeGespeichertes() {
+    let gespeichert = {};
+    try {
+        gespeichert = JSON.parse(localStorage.getItem(SPEICHER) || "{}");
+    } catch (fehler) {
+        // Ein kaputter Eintrag darf den Start nicht verhindern -- er wird beim
+        // naechsten Sichern ohnehin ueberschrieben.
+        console.warn("Gespeicherte Einstellungen unlesbar, starte mit Vorgaben", fehler);
+    }
+
+    // Vorbelegung aus config.local.js (von start.py erzeugt) -- sie gewinnt
+    // nur dort, wo noch nichts gespeichert ist.
+    const ausDatei = window.LIVETICKER_CONFIG || {};
+    zustand.cfg = {
+        url: gespeichert.url || ausDatei.url || "",
+        key: gespeichert.key || ausDatei.key || "",
+        table: gespeichert.table || ausDatei.table || "throws",
+        lanes: gespeichert.lanes || ausDatei.lanes || [2, 3, 4, 5],
+    };
+    zustand.gewaehlt = new Set(gespeichert.gewaehlt || zustand.cfg.lanes);
+    zustand.fokus = gespeichert.fokus ?? [...zustand.gewaehlt][0] ?? null;
+
+    // Abschnitte ueberleben ein Neuladen. Ohne das waere ein versehentliches
+    // F5 mitten im Spiel gleichbedeutend mit dem Verlust der Startmarke.
+    for (const [bahn, segmente] of Object.entries(gespeichert.segmente || {})) {
+        holeTicker(Number(bahn)).segments = segmente;
+    }
+    return gespeichert;
+}
+
+function sichere() {
+    const segmente = {};
+    for (const [bahn, t] of zustand.ticker) {
+        if (t.segments.length) segmente[bahn] = t.segments;
+    }
+    try {
+        localStorage.setItem(SPEICHER, JSON.stringify({
+            ...zustand.cfg,
+            gewaehlt: [...zustand.gewaehlt],
+            fokus: zustand.fokus,
+            since: zustand.since,
+            segmente,
+        }));
+    } catch (fehler) {
+        console.warn("Einstellungen konnten nicht gesichert werden", fehler);
+    }
+}
+
+function holeTicker(bahn) {
+    if (!zustand.ticker.has(bahn)) zustand.ticker.set(bahn, new LaneTicker(bahn));
+    return zustand.ticker.get(bahn);
+}
+
+/* --------------------------------------------------------------- Kegelbild */
+
+/** Zeichnet die Raute: gefallene Kegel leuchten, stehende bleiben dunkel. */
+function rauteSvg(gefallen, breite) {
+    const unten = new Set(gefallen || []);
+    let kreise = "";
+    for (const [pin, [spalte, reihe]] of Object.entries(PIN_LAYOUT)) {
+        const klasse = unten.has(Number(pin)) ? "gefallen" : "steht";
+        kreise += `<circle class="${klasse}" cx="${12 + spalte * 19}" `
+                + `cy="${12 + reihe * 21.5}" r="7"></circle>`;
+    }
+    const text = unten.size
+        ? `Gefallen: ${[...unten].sort((a, b) => a - b).join(", ")}`
+        : "Kein Kegel gefallen";
+    return `<svg class="raute" viewBox="0 0 100 110" width="${breite}" `
+         + `height="${Math.round(breite * 1.1)}" role="img" aria-label="${text}">`
+         + `${kreise}</svg>`;
+}
+
+/* ------------------------------------------------------------- Bahnkarten */
+
+function zeichneChips() {
+    const behaelter = $("#bahn-chips");
+    behaelter.innerHTML = "";
+    const sichtbar = new Set(zustand.gezeichnet);
+    for (const bahn of zustand.cfg.lanes) {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "chip";
+        chip.textContent = `Bahn ${bahn}`;
+        chip.setAttribute("aria-pressed", String(zustand.gewaehlt.has(bahn)));
+        chip.dataset.sichtbar = sichtbar.has(bahn) ? "ja" : "nein";
+        chip.addEventListener("click", () => {
+            // Ein Tipp waehlt die Bahn aus und holt sie zugleich ins Bild --
+            // auf dem Handy ist das der einzige Weg, die Bahn zu wechseln.
+            if (zustand.gewaehlt.has(bahn) && zustand.fokus === bahn
+                    && zustand.gewaehlt.size > 1) {
+                zustand.gewaehlt.delete(bahn);
+                zustand.fokus = [...zustand.gewaehlt][0];
+            } else {
+                zustand.gewaehlt.add(bahn);
+                zustand.fokus = bahn;
+            }
+            neueAbfrage();
+            zeichne();
+            sichere();
+        });
+        behaelter.appendChild(chip);
+    }
+}
+
+/** Baut die Karten neu -- nur wenn sich die Menge der sichtbaren Bahnen aendert. */
+function baueKarten(bahnen) {
+    const ziel = $("#bahnen");
+    ziel.innerHTML = "";
+    ziel.style.setProperty("--spalten", String(Math.max(1, bahnen.length)));
+
+    for (const bahn of bahnen) {
+        const karte = $("#vorlage-bahn").content.firstElementChild.cloneNode(true);
+        karte.dataset.bahn = String(bahn);
+        karte.querySelector(".bahn-name").textContent = `Bahn ${bahn}`;
+        karte.querySelector("button.start").addEventListener("click", () => {
+            holeTicker(bahn).start(Date.now());
+            zeichne();
+            sichere();
+        });
+        karte.querySelector("button.stopp").addEventListener("click", () => {
+            holeTicker(bahn).stop(Date.now());
+            zeichne();
+            sichere();
+        });
+        ziel.appendChild(karte);
+    }
+    zustand.gezeichnet = [...bahnen];
+}
+
+function zeichne() {
+    const bahnen = visibleLanes(
+        zustand.gewaehlt,
+        maxVisible(window.innerWidth, window.innerHeight),
+        zustand.fokus,
+    );
+    const gleich = bahnen.length === zustand.gezeichnet.length
+        && bahnen.every((b, i) => b === zustand.gezeichnet[i]);
+    if (!gleich) {
+        baueKarten(bahnen);
+        zeichneChips();
+    }
+
+    let irgendwas = false;
+    for (const bahn of bahnen) {
+        const karte = $(`.bahn[data-bahn="${bahn}"]`);
+        if (karte) irgendwas = fuelleKarte(karte, bahn) || irgendwas;
+    }
+    $("#leer").hidden = irgendwas || zustand.gewaehlt.size === 0;
+}
+
+function fuelleKarte(karte, bahn) {
+    const t = holeTicker(bahn);
+    const zeilen = t.rows();
+    const kennzahlen = t.stats();
+    const letzter = t.latest();
+
+    karte.dataset.laeuft = t.running ? "ja" : "nein";
+    karte.querySelector("button.start").textContent = t.running ? "neu starten" : "Start";
+    karte.querySelector("button.stopp").disabled = !t.running;
+    karte.querySelector(".abschnitt").textContent = t.segments.length
+        ? (t.running ? `Abschnitt ${t.segments.length} läuft` : `Abschnitt ${t.segments.length} beendet`)
+        : "Warmwerfen — noch nicht gestartet";
+
+    // Kopf: was zuletzt auf dieser Bahn gefallen ist.
+    karte.querySelector(".raute-gross").innerHTML = rauteSvg(letzter ? letzter.fallen : [], 96);
+    karte.querySelector(".letzter-text").textContent = letzter
+        ? `${letzter.value} gefallen · ${letzter.standing.length} stehen`
+        : "noch kein Wurf";
+
+    karte.querySelector(".k-summe").textContent = String(kennzahlen.total);
+    karte.querySelector(".k-fehl").textContent = String(kennzahlen.misses);
+    karte.querySelector(".k-anzahl").textContent = String(kennzahlen.count);
+
+    const koerper = karte.querySelector("table.wuerfe tbody");
+    const bekannt = zustand.bekannteIds.get(bahn) || new Set();
+    koerper.innerHTML = "";
+
+    // Neueste zuerst: Ein Ticker soll den frischen Wurf zeigen, ohne dass
+    // jemand scrollen muss.
+    for (const z of [...zeilen].reverse()) {
+        const tr = document.createElement("tr");
+        if (z.segment === 0) tr.classList.add("ausserhalb");
+        if (z.miss) tr.classList.add("fehlwurf");
+        if (z.id !== null && !bekannt.has(z.id)) tr.classList.add("neu");
+        tr.innerHTML =
+            `<td class="nr">${z.throwNumber ?? "–"}</td>`
+          + `<td class="wert">${z.value}</td>`
+          + `<td class="kegel">${z.fallen.length ? z.fallen.join(" ") : "–"}</td>`
+          + `<td>${rauteSvg(z.fallen, 34)}</td>`
+          + `<td class="zeit">${formatClock(z.time)}</td>`;
+        koerper.appendChild(tr);
+    }
+    zustand.bekannteIds.set(bahn, new Set(zeilen.map((z) => z.id)));
+    return zeilen.length > 0;
+}
+
+/* -------------------------------------------------------------------- CSV */
+
+/**
+ * Schreibt je Bahn eine CSV in den gewaehlten Ordner.
+ *
+ * Geschrieben wird immer die VOLLSTAENDIGE Datei, nicht angehaengt. Das ist bei
+ * ein paar hundert Zeilen billig und hat einen Vorteil, der den Aufwand wert
+ * ist: Nach einem Neuladen stellt der naechste Schreibvorgang die Datei
+ * vollstaendig wieder her, statt eine halbe Datei fortzuschreiben.
+ */
+async function schreibeCsv() {
+    if (!zustand.ordner) return;
+    for (const [bahn, t] of zustand.ticker) {
+        const text = csvText(t.rows());
+        if (zustand.csvStand.get(bahn) === text) continue;
+        try {
+            const datei = await zustand.ordner.getFileHandle(`bahn_${bahn}.csv`, { create: true });
+            const strom = await datei.createWritable();
+            // BOM voran, sonst zeigt Excel Umlaute falsch an.
+            await strom.write("﻿" + text);
+            await strom.close();
+            zustand.csvStand.set(bahn, text);
+        } catch (fehler) {
+            melde(`CSV für Bahn ${bahn} nicht geschrieben: ${fehler.message}`);
+        }
+    }
+}
+
+async function waehleOrdner() {
+    if (!window.showDirectoryPicker) {
+        melde("Dieser Browser kann nicht in einen Ordner schreiben. "
+            + "Chrome oder Edge verwenden — oder den Knopf „herunterladen“ nutzen.");
+        return;
+    }
+    try {
+        zustand.ordner = await window.showDirectoryPicker({ mode: "readwrite" });
+        $("#ordner-text").textContent = `schreibt nach „${zustand.ordner.name}“ — je Bahn eine Datei`;
+        zustand.csvStand.clear();
+        await schreibeCsv();
+    } catch (fehler) {
+        if (fehler.name !== "AbortError") melde(`Ordner nicht nutzbar: ${fehler.message}`);
+    }
+}
+
+/** Rueckfallweg fuer Browser ohne Ordnerzugriff: eine Datei je Bahn herunterladen. */
+function ladeCsvHerunter() {
+    for (const [bahn, t] of zustand.ticker) {
+        if (!t.rows().length) continue;
+        const blob = new Blob(["﻿" + csvText(t.rows())],
+                              { type: "text/csv;charset=utf-8" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `bahn_${bahn}.csv`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+    }
+}
+
+/* ---------------------------------------------------------------- Abfrage */
+
+function ampel(zustandName, text) {
+    $("#ampel").dataset.zustand = zustandName;
+    $("#verbindungstext").textContent = text;
+}
+
+function melde(text) {
+    const p = $("#meldung");
+    p.textContent = text;
+    p.hidden = !text;
+}
+
+function neueAbfrage() {
+    if (!zustand.cfg.url || !zustand.cfg.key) {
+        zustand.feed = null;
+        ampel("aus", "nicht eingerichtet");
+        return;
+    }
+    zustand.feed = new ThrowFeed({
+        url: zustand.cfg.url,
+        key: zustand.cfg.key,
+        table: zustand.cfg.table,
+        lanes: [...zustand.gewaehlt],
+        since: zustand.since,
+    });
+    // Die Wuerfe neu einlesen, die Abschnitte behalten: Der Zeitpunkt aendert,
+    // WAS gelesen wird, nicht, wann das Spiel begonnen hat.
+    for (const t of zustand.ticker.values()) {
+        t.throws = [];
+        t._seen = new Set();
+    }
+    zustand.bekannteIds.clear();
+    zustand.csvStand.clear();
+}
+
+async function runde() {
+    if (!zustand.feed) return;
+    try {
+        const zeilen = await zustand.feed.fetchNew();
+        let neu = 0;
+        for (const zeile of zeilen) {
+            // Eine Bahn, die in den Daten auftaucht, aber nicht in der Liste
+            // steht, wird aufgenommen -- sonst bliebe sie unsichtbar.
+            if (!zustand.cfg.lanes.includes(zeile.lane)) {
+                zustand.cfg.lanes.push(zeile.lane);
+                zustand.cfg.lanes.sort((a, b) => a - b);
+                zeichneChips();
+            }
+            neu += holeTicker(zeile.lane).ingest([zeile]);
+        }
+        ampel("an", neu ? `${neu} neu · ${formatClock(Date.now())}` : `verbunden · ${formatClock(Date.now())}`);
+        melde("");
+        if (neu) {
+            zeichne();
+            await schreibeCsv();
+        }
+    } catch (fehler) {
+        // Ein Aussetzer beendet den Ticker nicht -- die naechste Runde holt
+        // nach, was diese verpasst hat.
+        ampel("fehler", "keine Verbindung");
+        melde(`Abfrage fehlgeschlagen: ${fehler.message}`);
+    }
+}
+
+/* ------------------------------------------------------------------ Start */
+
+/** `datetime-local` liefert Ortszeit -- die Datenbank rechnet in UTC. */
+function ausEingabefeld(wert) {
+    if (!wert) return null;
+    const d = new Date(wert);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+function insEingabefeld(iso) {
+    const d = iso ? new Date(iso) : new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+         + `T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function ausAdresse() {
+    // Zeitpunkt und Bahnen lassen sich auch in der Adresse uebergeben:
+    //   index.html?ab=2026-09-07T19:00&bahnen=2,3
+    const p = new URLSearchParams(window.location.search);
+    const ab = p.get("ab");
+    const bahnen = p.get("bahnen");
+    if (ab) zustand.since = ausEingabefeld(ab) || ab;
+    if (bahnen) {
+        const liste = bahnen.split(",").map((s) => Number(s.trim())).filter(Boolean);
+        if (liste.length) {
+            zustand.gewaehlt = new Set(liste);
+            zustand.fokus = liste[0];
+            for (const b of liste) {
+                if (!zustand.cfg.lanes.includes(b)) zustand.cfg.lanes.push(b);
+            }
+            zustand.cfg.lanes.sort((a, b) => a - b);
+        }
+    }
+}
+
+function oeffneEinstellungen() {
+    $("#cfg-url").value = zustand.cfg.url;
+    $("#cfg-key").value = zustand.cfg.key;
+    $("#cfg-table").value = zustand.cfg.table;
+    $("#cfg-lanes").value = zustand.cfg.lanes.join(",");
+    $("#dlg-einstellungen").showModal();
+}
+
+function start() {
+    const gespeichert = ladeGespeichertes();
+
+    // Vorgabe: ab heute null Uhr. Ein Spieltag beginnt selten vor Mitternacht,
+    // und alles Aeltere waere nur Ballast.
+    const heute = new Date();
+    heute.setHours(0, 0, 0, 0);
+    zustand.since = gespeichert.since || heute.toISOString();
+    ausAdresse();
+    $("#ab-zeit").value = insEingabefeld(zustand.since);
+
+    $("#btn-einstellungen").addEventListener("click", oeffneEinstellungen);
+    $("#dlg-einstellungen").addEventListener("close", (ev) => {
+        if (ev.target.returnValue !== "ok") return;
+        zustand.cfg.url = $("#cfg-url").value.trim();
+        zustand.cfg.key = $("#cfg-key").value.trim();
+        zustand.cfg.table = $("#cfg-table").value.trim() || "throws";
+        const liste = $("#cfg-lanes").value.split(",")
+            .map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
+        if (liste.length) {
+            zustand.cfg.lanes = liste;
+            zustand.gewaehlt = new Set(liste);
+            zustand.fokus = liste[0];
+        }
+        neueAbfrage();
+        zeichneChips();
+        zeichne();
+        sichere();
+    });
+
+    const zeitGeaendert = () => {
+        zustand.since = ausEingabefeld($("#ab-zeit").value);
+        neueAbfrage();
+        zeichne();
+        sichere();
+    };
+    $("#ab-zeit").addEventListener("change", zeitGeaendert);
+    $("#btn-jetzt").addEventListener("click", () => {
+        $("#ab-zeit").value = insEingabefeld(new Date().toISOString());
+        zeitGeaendert();
+    });
+    $("#btn-heute").addEventListener("click", () => {
+        const d = new Date();
+        d.setHours(0, 0, 0, 0);
+        $("#ab-zeit").value = insEingabefeld(d.toISOString());
+        zeitGeaendert();
+    });
+
+    $("#btn-alle-start").addEventListener("click", () => {
+        const jetzt = Date.now();
+        for (const bahn of zustand.gewaehlt) holeTicker(bahn).start(jetzt);
+        zeichne();
+        sichere();
+    });
+    $("#btn-alle-stopp").addEventListener("click", () => {
+        const jetzt = Date.now();
+        for (const bahn of zustand.gewaehlt) holeTicker(bahn).stop(jetzt);
+        zeichne();
+        sichere();
+    });
+
+    $("#btn-ordner").addEventListener("click", waehleOrdner);
+    $("#btn-download").addEventListener("click", ladeCsvHerunter);
+    window.addEventListener("resize", zeichne);
+    window.addEventListener("orientationchange", zeichne);
+
+    zeichneChips();
+    zeichne();
+    neueAbfrage();
+
+    if (!zustand.cfg.url || !zustand.cfg.key) {
+        melde("Noch nicht eingerichtet — Projekt-URL und Schlüssel unter „Einstellungen“ eintragen.");
+        oeffneEinstellungen();
+    }
+
+    setInterval(runde, ABFRAGETAKT_MS);
+    runde();
+}
+
+start();
+
+</script>
+</body>
+</html>
